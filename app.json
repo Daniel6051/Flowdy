@@ -20,6 +20,15 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Flowdy necesita el micrófono para grabar audios."
+        }
+      ]
+    ]
   }
 }
