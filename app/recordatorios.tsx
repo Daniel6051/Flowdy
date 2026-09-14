@@ -1,9 +1,11 @@
 import {
-  View, Text, TouchableOpacity, TextInput, ScrollView, Modal, Switch, Alert, Platform,
+  View, Text, TouchableOpacity, TextInput, ScrollView, Modal, Switch, Alert, Platform, Animated,
 } from "react-native";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter, useLocalSearchParams, useFocusEffect } from "expo-router";
 import { Plus, Trash2, Bell, ListChecks } from "lucide-react-native";
+import * as Crypto from "expo-crypto";
+import DateTimePicker from "@react-native-community/datetimepicker";
 import { sanitizar } from "../lib/seguridad";
 import { Tarea, obtenerTareas, guardarTareas, COLORES_PRIORIDAD } from "../lib/tareas";
 import {
@@ -17,13 +19,6 @@ import {
   avisosDelSistemaDisponibles,
 } from "../lib/recordatorios";
 
-const HORAS = Array.from({ length: 36 }, (_, i) => {
-  const total = 6 * 60 + i * 30;
-  const h = Math.floor(total / 60);
-  const m = total % 60;
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-});
-
 export default function RecordatoriosScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ dia?: string; mes?: string; anio?: string }>();
@@ -32,6 +27,21 @@ export default function RecordatoriosScreen() {
   const dia = params.dia ? Number(params.dia) : hoy.getDate();
   const mes = params.mes ? Number(params.mes) : hoy.getMonth();
   const anio = params.anio ? Number(params.anio) : hoy.getFullYear();
+
+  const esHoy = anio === hoy.getFullYear() && mes === hoy.getMonth() && dia === hoy.getDate();
+
+  const horaEsValida = (hora: string) => {
+    if (!esHoy) return true; // otro día: cualquier hora vale
+    const cuando = fechaDelRecordatorio(anio, mes, dia, hora);
+    return cuando.getTime() > Date.now();
+  };
+
+  const horaAFecha = (hora: string) => {
+    const [h, m] = hora.split(":").map(Number);
+    const d = new Date();
+    d.setHours(h, m, 0, 0);
+    return d;
+  };
 
   const fecha = new Date(anio, mes, dia);
   const fechaTexto = fecha.toLocaleDateString("es-AR", {
@@ -46,31 +56,61 @@ export default function RecordatoriosScreen() {
   const [nuevoTitulo, setNuevoTitulo] = useState("");
   const [nuevaNota, setNuevaNota] = useState("");
   const [tareaHoraId, setTareaHoraId] = useState<string | null>(null);
+  const [mostrarPickerNuevo, setMostrarPickerNuevo] = useState(false);
+  const [mostrarPickerTarea, setMostrarPickerTarea] = useState(false);
+
+  // Animación de escala para el botón de volver
+  const escalaVolver = useRef(new Animated.Value(1)).current;
+  const presionar = (valor: Animated.Value, hacia: number) => {
+    Animated.spring(valor, { toValue: hacia, useNativeDriver: true, speed: 40, bounciness: 8 }).start();
+  };
+
+  // Igual que en plan-del-dia.tsx: evita reescribir en storage justo después
+  // de cargar, cuando lista cambia por el propio fetch y no por una edición real.
+  const saltarGuardado = useRef(true);
 
   useFocusEffect(
     useCallback(() => {
+      let activo = true;
+      saltarGuardado.current = true;
       setCargando(true);
       Promise.all([
         obtenerRecordatorios(anio, mes, dia),
         obtenerTareas(anio, mes, dia),
       ]).then(([r, t]) => {
+        if (!activo) return;
+        saltarGuardado.current = true;
         setLista(r);
         setTareas(t);
         setCargando(false);
       });
+      return () => { activo = false; };
     }, [anio, mes, dia])
   );
 
   useEffect(() => {
-    if (!cargando) guardarRecordatorios(anio, mes, dia, lista);
-  }, [lista]);
+    if (cargando) return;
+    if (saltarGuardado.current) {
+      saltarGuardado.current = false;
+      return;
+    }
+    guardarRecordatorios(anio, mes, dia, lista);
+  }, [lista, cargando, anio, mes, dia]);
 
   const ordenados = [...lista].sort((a, b) => a.hora.localeCompare(b.hora));
   const tareasPendientes = tareas.filter(t => !t.completada);
   const tareasHechas = tareas.filter(t => t.completada);
 
   const abrirModal = () => {
-    setNuevaHora("09:00");
+    // Si es hoy, arrancá sugiriendo la hora actual + 5 min en vez de un 09:00 que podría quedar en el pasado.
+    if (esHoy) {
+      const sugerida = new Date(Date.now() + 5 * 60 * 1000);
+      setNuevaHora(
+        `${String(sugerida.getHours()).padStart(2, "0")}:${String(sugerida.getMinutes()).padStart(2, "0")}`
+      );
+    } else {
+      setNuevaHora("09:00");
+    }
     setNuevoTitulo("");
     setNuevaNota("");
     setMostrarModal(true);
@@ -89,15 +129,14 @@ export default function RecordatoriosScreen() {
     const titulo = sanitizar(nuevoTitulo);
     if (!titulo) return;
 
-    const cuando = fechaDelRecordatorio(anio, mes, dia, nuevaHora);
-    if (cuando.getTime() <= Date.now()) {
+    if (!horaEsValida(nuevaHora)) {
       Alert.alert("Hora pasada", "Elegí una hora posterior a ahora para que te avise.");
       return;
     }
 
     const notificationId = await programarSiSePuede(titulo, sanitizar(nuevaNota), nuevaHora);
     setLista(r => [...r, {
-      id: Date.now().toString(),
+      id: Crypto.randomUUID(),
       titulo,
       nota: sanitizar(nuevaNota),
       hora: nuevaHora,
@@ -129,6 +168,10 @@ export default function RecordatoriosScreen() {
   };
 
   const cambiarHoraTarea = async (tarea: Tarea, hora: string) => {
+    if (!horaEsValida(hora)) {
+      Alert.alert("Hora pasada", "Elegí una hora posterior a ahora para que te avise.");
+      return;
+    }
     await cancelarNotificacion(tarea.notificationId);
     const notificationId = tarea.avisar
       ? await programarSiSePuede(tarea.titulo, "Tarea de Flowdy", hora)
@@ -214,8 +257,12 @@ export default function RecordatoriosScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: "#B6C3F2", padding: 20 }}>
       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 40 }}>
-        <TouchableOpacity onPress={() => router.back()}>
-          <Text style={{ fontSize: 20, color: "#7C3AED" }}>‹</Text>
+        <TouchableOpacity
+          onPress={() => router.replace("/calendario")}
+          onPressIn={() => presionar(escalaVolver, 0.85)}
+          onPressOut={() => presionar(escalaVolver, 1)}
+        >
+          <Animated.Text style={{ fontSize: 40, color: "#7C3AED", transform: [{ scale: escalaVolver }] }}>‹</Animated.Text>
         </TouchableOpacity>
         <Text style={{ fontSize: 20, fontWeight: "bold", color: "#1a1a1a" }}>Recordatorios</Text>
         <TouchableOpacity onPress={abrirModal}>
@@ -304,16 +351,36 @@ export default function RecordatoriosScreen() {
             </Text>
 
             <Text style={{ color: "#6B7280", fontSize: 12, marginBottom: 6 }}>Hora</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
-              {HORAS.map(h => (
-                <TouchableOpacity key={h} onPress={() => setNuevaHora(h)} style={{
-                  paddingVertical: 8, paddingHorizontal: 14, borderRadius: 20, marginRight: 8,
-                  backgroundColor: h === nuevaHora ? "#7C3AED" : "#EDE9FE",
-                }}>
-                  <Text style={{ color: h === nuevaHora ? "#FFFFFF" : "#7C3AED", fontWeight: "bold" }}>{h}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
+            <TouchableOpacity
+              onPress={() => setMostrarPickerNuevo(true)}
+              style={{
+                backgroundColor: "#EDE9FE", borderRadius: 10, padding: 14,
+                alignItems: "center", marginBottom: 12,
+              }}
+            >
+              <Text style={{ color: "#7C3AED", fontWeight: "bold", fontSize: 18 }}>{nuevaHora}</Text>
+            </TouchableOpacity>
+
+            {mostrarPickerNuevo && (
+              <DateTimePicker
+                value={horaAFecha(nuevaHora)}
+                mode="time"
+                is24Hour
+                display={Platform.OS === "android" ? "clock" : "spinner"}
+                onChange={(event, selected) => {
+                  setMostrarPickerNuevo(false);
+                  if (event.type === "dismissed" || !selected) return;
+                  const hh = String(selected.getHours()).padStart(2, "0");
+                  const mm = String(selected.getMinutes()).padStart(2, "0");
+                  const nueva = `${hh}:${mm}`;
+                  if (!horaEsValida(nueva)) {
+                    Alert.alert("Hora pasada", "Elegí una hora posterior a ahora para que te avise.");
+                    return;
+                  }
+                  setNuevaHora(nueva);
+                }}
+              />
+            )}
 
             <Text style={{ color: "#6B7280", fontSize: 12, marginBottom: 6 }}>Título</Text>
             <TextInput
@@ -349,23 +416,37 @@ export default function RecordatoriosScreen() {
             <Text style={{ fontSize: 16, fontWeight: "bold", color: "#1a1a1a", marginBottom: 12 }}>
               ¿A qué hora te lo recordamos?
             </Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              {HORAS.map(h => (
-                <TouchableOpacity
-                  key={h}
-                  onPress={() => {
-                    const tarea = tareas.find(t => t.id === tareaHoraId);
-                    if (tarea) cambiarHoraTarea(tarea, h);
-                  }}
-                  style={{
-                    paddingVertical: 8, paddingHorizontal: 14, borderRadius: 20, marginRight: 8,
-                    backgroundColor: "#EDE9FE",
-                  }}
-                >
-                  <Text style={{ color: "#7C3AED", fontWeight: "bold" }}>{h}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
+
+            <TouchableOpacity
+              onPress={() => setMostrarPickerTarea(true)}
+              style={{
+                backgroundColor: "#EDE9FE", borderRadius: 10, padding: 14,
+                alignItems: "center",
+              }}
+            >
+              <Text style={{ color: "#7C3AED", fontWeight: "bold", fontSize: 18 }}>
+                {tareas.find(t => t.id === tareaHoraId)?.horaAviso || "09:00"}
+              </Text>
+            </TouchableOpacity>
+
+            {mostrarPickerTarea && (
+              <DateTimePicker
+                value={horaAFecha(tareas.find(t => t.id === tareaHoraId)?.horaAviso || "09:00")}
+                mode="time"
+                is24Hour
+                display={Platform.OS === "android" ? "clock" : "spinner"}
+                onChange={(event, selected) => {
+                  setMostrarPickerTarea(false);
+                  if (event.type === "dismissed" || !selected) return;
+                  const hh = String(selected.getHours()).padStart(2, "0");
+                  const mm = String(selected.getMinutes()).padStart(2, "0");
+                  const nueva = `${hh}:${mm}`;
+                  const tarea = tareas.find(t => t.id === tareaHoraId);
+                  if (tarea) cambiarHoraTarea(tarea, nueva);
+                }}
+              />
+            )}
+
             <TouchableOpacity onPress={() => setTareaHoraId(null)} style={{ marginTop: 14, alignItems: "center" }}>
               <Text style={{ color: "#9CA3AF", fontWeight: "bold" }}>Cancelar</Text>
             </TouchableOpacity>

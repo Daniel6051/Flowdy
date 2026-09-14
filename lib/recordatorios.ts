@@ -1,5 +1,5 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
+import { supabase } from "./supabase";
 
 export type Recordatorio = {
   id: string;
@@ -10,14 +10,20 @@ export type Recordatorio = {
   notificationId?: string;
 };
 
-const CANAL = "recordatorios";
-const clave = (anio: number, mes: number, dia: number) =>
-  `recordatorios-${anio}-${mes}-${dia}`;
+// Cambiado de "recordatorios" a "recordatorios-v2": el canal original quedó
+// creado a medio armar (sin importance HIGH) porque el "sound: default" tiraba
+// error antes de terminar de configurarlo. Los canales de Android son
+// inmutables una vez creados, así que hace falta un ID nuevo para que tome
+// la config correcta.
+const CANAL = "recordatorios-v2";
 
 export function avisosDelSistemaDisponibles() {
-  // En Expo Go (Android SDK 53+) el módulo de notificaciones intenta
-  // registrar push remoto y crashea. Los avisos de sistema quedan para EAS / dev client.
   return Constants.appOwnership !== "expo";
+}
+
+async function obtenerUserId(): Promise<string | null> {
+  const { data } = await supabase.auth.getSession();
+  return data.session?.user.id ?? null;
 }
 
 export async function obtenerRecordatorios(
@@ -25,12 +31,27 @@ export async function obtenerRecordatorios(
   mes: number,
   dia: number,
 ): Promise<Recordatorio[]> {
-  try {
-    const json = await AsyncStorage.getItem(clave(anio, mes, dia));
-    return json ? JSON.parse(json) : [];
-  } catch {
-    return [];
-  }
+  const userId = await obtenerUserId();
+  if (!userId) return [];
+
+  const { data, error } = await supabase
+    .from("recordatorios")
+    .select("id, titulo, nota, hora, activo, notification_id")
+    .eq("user_id", userId)
+    .eq("anio", anio)
+    .eq("mes", mes)
+    .eq("dia", dia);
+
+  if (error || !data) return [];
+
+  return data.map(r => ({
+    id: r.id,
+    titulo: r.titulo,
+    nota: r.nota ?? "",
+    hora: r.hora,
+    activo: r.activo,
+    notificationId: r.notification_id ?? undefined,
+  }));
 }
 
 export async function guardarRecordatorios(
@@ -39,7 +60,43 @@ export async function guardarRecordatorios(
   dia: number,
   lista: Recordatorio[],
 ) {
-  await AsyncStorage.setItem(clave(anio, mes, dia), JSON.stringify(lista));
+  const userId = await obtenerUserId();
+  if (!userId) return;
+
+  // Trae qué ids ya existen en la base para ese día, para saber qué borrar
+  const { data: existentes } = await supabase
+    .from("recordatorios")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("anio", anio)
+    .eq("mes", mes)
+    .eq("dia", dia);
+
+  const idsActuales = new Set(lista.map(r => r.id));
+  const idsABorrar = (existentes ?? [])
+    .map(e => e.id)
+    .filter(id => !idsActuales.has(id));
+
+  if (idsABorrar.length > 0) {
+    await supabase.from("recordatorios").delete().in("id", idsABorrar);
+  }
+
+  if (lista.length > 0) {
+    await supabase.from("recordatorios").upsert(
+      lista.map(r => ({
+        id: r.id,
+        user_id: userId,
+        anio,
+        mes,
+        dia,
+        titulo: r.titulo,
+        nota: r.nota,
+        hora: r.hora,
+        activo: r.activo,
+        notification_id: r.notificationId ?? null,
+      }))
+    );
+  }
 }
 
 export function fechaDelRecordatorio(
@@ -87,13 +144,16 @@ export async function programarRecordatorio(
       name: "Recordatorios",
       importance: Notifications.AndroidImportance.HIGH,
       vibrationPattern: [0, 250, 250, 250],
-      sound: "default",
-    }).catch(() => {});
+      // sin "sound" acá: sin un asset de sonido declarado en el plugin de
+      // app.json, "default" tira "Custom sound 'default' not found in native
+      // app" y aborta antes de terminar de crear el canal. Con importance
+      // HIGH alcanza para que Android reproduzca su sonido de notificación
+      // normal.
+    });
     return await Notifications.scheduleNotificationAsync({
       content: {
         title: titulo,
         body: nota || "Recordatorio de Flowdy",
-        sound: "default",
       },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.DATE,
@@ -101,7 +161,8 @@ export async function programarRecordatorio(
         channelId: CANAL,
       },
     });
-  } catch {
+  } catch (e) {
+    console.log("Error al programar notificación:", e);
     return null;
   }
 }

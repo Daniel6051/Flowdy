@@ -14,7 +14,7 @@ import { ArrowLeft, MailCheck } from "lucide-react-native";
 import { useState } from "react";
 import InputSeguro from "../../components/InputSeguro";
 import FortalezaPassword from "../../components/FortalezaPassword";
-import CaptchaVisual from "../../components/CaptchaVisual";
+import CaptchaHcaptcha from "../../components/CaptchaHcaptcha";
 import { supabase } from "../../lib/supabase";
 import {
   validarEmail,
@@ -28,14 +28,15 @@ import {
 export default function RecuperarScreen() {
   const router = useRouter();
 
-  const [paso, setPaso]           = useState<1 | 2 | 3>(1);
-  const [email, setEmail]         = useState("");
-  const [nombre, setNombre]       = useState("");
-  const [captchaOk, setCaptchaOk] = useState(false);
-  const [codigo, setCodigo]       = useState("");
-  const [nueva, setNueva]         = useState("");
-  const [repetir, setRepetir]     = useState("");
-  const [cargando, setCargando]   = useState(false);
+  const [paso, setPaso]                 = useState<1 | 2 | 3>(1);
+  const [email, setEmail]               = useState("");
+  const [nombre, setNombre]             = useState("");
+  const [captchaOk, setCaptchaOk]       = useState(false);
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const [codigo, setCodigo]             = useState("");
+  const [nueva, setNueva]               = useState("");
+  const [repetir, setRepetir]           = useState("");
+  const [cargando, setCargando]         = useState(false);
 
   const errEmail  = validarEmail(email);
   const errNombre = validarNombre(nombre);
@@ -50,6 +51,22 @@ export default function RecuperarScreen() {
     if (!paso1Valido || cargando) return;
     setCargando(true);
     try {
+      // Validación server-side del captcha antes de disparar el reset
+      const { data: captchaCheck, error: captchaError } = await supabase.functions.invoke(
+        "verificar-captcha",
+        { body: { token: captchaToken } }
+      );
+
+      if (captchaError || !captchaCheck?.success) {
+        Alert.alert(
+          "Verificación fallida",
+          "No pudimos confirmar el captcha, intentá de nuevo.",
+          [{ text: "Entendido" }]
+        );
+        setCargando(false);
+        return;
+      }
+
       // No comprobamos el "error" acá a propósito: si el mail no existe,
       // Supabase igual puede devolver éxito o error según config, y en
       // cualquier caso NO queremos que la UI cambie de comportamiento
@@ -135,7 +152,7 @@ export default function RecuperarScreen() {
           style={styles.back}
           onPress={() => (paso === 2 ? setPaso(1) : router.back())}
         >
-          <ArrowLeft size={22} color="#7C3AED" />
+          <ArrowLeft size={30} color="#7C3AED" />
         </TouchableOpacity>
 
         <View style={styles.card}>
@@ -198,9 +215,10 @@ export default function RecuperarScreen() {
                 autoCapitalize="words"
               />
 
-              <CaptchaVisual
+              <CaptchaHcaptcha
                 verificado={captchaOk}
                 onVerificado={setCaptchaOk}
+                onToken={setCaptchaToken}
               />
 
               <View style={styles.infoBox}>

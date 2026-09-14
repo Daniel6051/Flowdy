@@ -7,7 +7,7 @@ import {
   Alert,
   ActivityIndicator,
 } from "react-native";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "expo-router";
 import { ArrowLeft, User, Flame, Star, Trash2, LogOut } from "lucide-react-native";
 import { useAuth } from "../lib/AuthContext";
@@ -16,6 +16,7 @@ import { supabase } from "../lib/supabase";
 export default function PerfilScreen() {
   const router = useRouter();
   const { session, cargando } = useAuth();
+  const [eliminando, setEliminando] = useState(false);
 
   // Si no hay sesión activa (ej: alguien entra directo a /perfil sin loguearse),
   // no tiene sentido mostrar esta pantalla — lo mandamos a login.
@@ -57,23 +58,23 @@ export default function PerfilScreen() {
         {
           text: "Eliminar",
           style: "destructive",
-          onPress: () => {
-            // TODO: eliminar cuenta en Supabase
-            // El cliente NO puede borrar el propio usuario de auth.users
-            // (supabase.auth.admin.* requiere la service role key, que
-            // nunca debe estar en la app). Hace falta una Edge Function
-            // en Supabase que reciba el pedido autenticado del usuario
-            // y ahí sí, del lado del servidor, llame a
-            // supabase.auth.admin.deleteUser(uid) con la service role key.
-            // Cuando esa función exista, acá se llama así:
-            // await supabase.functions.invoke("eliminar-cuenta");
-            console.log("Cuenta eliminada (pendiente: Edge Function)");
+          onPress: async () => {
+            setEliminando(true);
+            const resultado = await supabase.functions.invoke("eliminar-cuenta");
+            setEliminando(false);
+  
+            if (resultado.error) {
+              Alert.alert("Error", "No se pudo eliminar la cuenta. Probá de nuevo.");
+              return;
+            }
+  
+            await supabase.auth.signOut();
+            router.replace("/auth/login");
           },
         },
       ]
     );
   };
-
   if (cargando || !session) {
     return (
       <View style={[styles.container, styles.centrado]}>
@@ -85,7 +86,7 @@ export default function PerfilScreen() {
   return (
     <View style={styles.container}>
       <TouchableOpacity style={styles.back} onPress={() => router.back()}>
-        <ArrowLeft size={22} color="#7C3AED" />
+        <ArrowLeft size={30} color="#7C3AED" />
       </TouchableOpacity>
 
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
@@ -141,9 +142,16 @@ export default function PerfilScreen() {
         <TouchableOpacity
           style={styles.deleteButton}
           onPress={handleEliminarCuenta}
+          disabled={eliminando}
         >
-          <Trash2 size={16} color="#EF4444" />
-          <Text style={styles.deleteText}>Eliminar cuenta</Text>
+          {eliminando ? (
+            <ActivityIndicator size="small" color="#EF4444" />
+          ) : (
+            <>
+              <Trash2 size={16} color="#EF4444" />
+              <Text style={styles.deleteText}>Eliminar cuenta</Text>
+            </>
+          )}
         </TouchableOpacity>
       </ScrollView>
     </View>

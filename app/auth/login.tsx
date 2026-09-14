@@ -13,7 +13,7 @@ import { useRouter } from "expo-router";
 import { ArrowLeft, ShieldAlert, Clock } from "lucide-react-native";
 import { useState } from "react";
 import InputSeguro from "../../components/InputSeguro";
-import CaptchaVisual from "../../components/CaptchaVisual";
+import CaptchaHcaptcha from "../../components/CaptchaHcaptcha";
 import { supabase } from "../../lib/supabase";
 import {
   validarEmail,
@@ -27,12 +27,13 @@ import {
 export default function LoginScreen() {
   const router = useRouter();
 
-  const [email, setEmail]         = useState("");
-  const [password, setPassword]   = useState("");
-  const [captchaOk, setCaptchaOk] = useState(false);
-  const [cargando, setCargando]   = useState(false);
-  const [bloqueado, setBloqueado] = useState(false);
-  const [msBloqueo, setMsBloqueo] = useState(0);
+  const [email, setEmail]               = useState("");
+  const [password, setPassword]         = useState("");
+  const [captchaOk, setCaptchaOk]       = useState(false);
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const [cargando, setCargando]         = useState(false);
+  const [bloqueado, setBloqueado]       = useState(false);
+  const [msBloqueo, setMsBloqueo]       = useState(0);
 
   // Errores de campo
   const errEmail    = validarEmail(email);
@@ -52,6 +53,22 @@ export default function LoginScreen() {
 
     setCargando(true);
     try {
+      // Validación server-side del captcha antes de intentar el login
+      const { data: captchaCheck, error: captchaError } = await supabase.functions.invoke(
+        "verificar-captcha",
+        { body: { token: captchaToken } }
+      );
+
+      if (captchaError || !captchaCheck?.success) {
+        Alert.alert(
+          "Verificación fallida",
+          "No pudimos confirmar el captcha, intentá de nuevo.",
+          [{ text: "Entendido" }]
+        );
+        setCargando(false);
+        return;
+      }
+
       const { error } = await supabase.auth.signInWithPassword({
         email: sanitizar(email).toLowerCase(),
         password, // la contraseña NO se sanitiza — Supabase la hashea
@@ -97,6 +114,7 @@ export default function LoginScreen() {
             onPress={() => {
               setBloqueado(false);
               setCaptchaOk(false);
+              setCaptchaToken(null);
             }}
           >
             <Text style={styles.buttonText}>Volver a intentar</Text>
@@ -116,7 +134,7 @@ export default function LoginScreen() {
         keyboardShouldPersistTaps="handled"
       >
         <TouchableOpacity style={styles.back} onPress={() => router.back()}>
-          <ArrowLeft size={22} color="#7C3AED" />
+          <ArrowLeft size={30} color="#7C3AED" />
         </TouchableOpacity>
 
         <View style={styles.card}>
@@ -144,10 +162,11 @@ export default function LoginScreen() {
             onSubmitEditing={handleLogin}
           />
 
-          {/* Captcha visual + TODO hCaptcha */}
-          <CaptchaVisual
+          {/* Captcha real (hCaptcha) */}
+          <CaptchaHcaptcha
             verificado={captchaOk}
             onVerificado={setCaptchaOk}
+            onToken={setCaptchaToken}
           />
 
           <TouchableOpacity

@@ -1,4 +1,4 @@
-import { View, Text, TouchableOpacity, TextInput, ScrollView, Modal } from "react-native";
+import { View, Text, TouchableOpacity, TextInput, ScrollView, Modal, Animated } from "react-native";
 import { useState, useEffect, useRef } from "react";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { Plus, Trash2 } from "lucide-react-native";
@@ -23,6 +23,12 @@ export default function PlanDelDiaScreen() {
   const [cargando, setCargando] = useState(true);
   const [errorRed, setErrorRed] = useState<string | null>(null);
   const saltarGuardado = useRef(true);
+
+  // Animación de escala para el botón de volver
+  const escalaVolver = useRef(new Animated.Value(1)).current;
+  const presionar = (valor: Animated.Value, hacia: number) => {
+    Animated.spring(valor, { toValue: hacia, useNativeDriver: true, speed: 40, bounciness: 8 }).start();
+  };
 
   useEffect(() => {
     let activo = true;
@@ -84,8 +90,12 @@ export default function PlanDelDiaScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: "#B6C3F2", padding: 20 }}>
       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 40 }}>
-        <TouchableOpacity onPress={() => router.back()}>
-          <Text style={{ fontSize: 20, color: "#7C3AED" }}>‹</Text>
+        <TouchableOpacity
+          onPress={() => router.replace("/calendario")}
+          onPressIn={() => presionar(escalaVolver, 0.85)}
+          onPressOut={() => presionar(escalaVolver, 1)}
+        >
+          <Animated.Text style={{ fontSize: 40, color: "#7C3AED", transform: [{ scale: escalaVolver }] }}>‹</Animated.Text>
         </TouchableOpacity>
         <Text style={{ fontSize: 20, fontWeight: "bold", color: "#1a1a1a" }}>Plan del día</Text>
         <TouchableOpacity onPress={abrirModal}>

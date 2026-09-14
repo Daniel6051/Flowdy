@@ -1,4 +1,5 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import { supabase } from "./supabase";
+import * as Crypto from "expo-crypto";
 
 export type Nota = {
   id: string;
@@ -7,35 +8,60 @@ export type Nota = {
   actualizada: string; // ISO date string
 };
 
-const CLAVE = "notas";
-
-export async function obtenerNotas(): Promise<Nota[]> {
-  try {
-    const json = await AsyncStorage.getItem(CLAVE);
-    return json ? JSON.parse(json) : [];
-  } catch {
-    return [];
-  }
+export function generarIdNota(): string {
+  return Crypto.randomUUID();
 }
 
-export async function guardarNotas(notas: Nota[]) {
-  await AsyncStorage.setItem(CLAVE, JSON.stringify(notas));
+async function obtenerUserId(): Promise<string | null> {
+  const { data } = await supabase.auth.getSession();
+  return data.session?.user.id ?? null;
+}
+
+export async function obtenerNotas(): Promise<Nota[]> {
+  const userId = await obtenerUserId();
+  if (!userId) return [];
+
+  const { data, error } = await supabase
+    .from("notas")
+    .select("id, titulo, contenido, actualizada")
+    .eq("user_id", userId)
+    .order("actualizada", { ascending: false });
+
+  if (error || !data) return [];
+  return data as Nota[];
 }
 
 export async function obtenerNota(id: string): Promise<Nota | null> {
-  const notas = await obtenerNotas();
-  return notas.find(n => n.id === id) ?? null;
+  const userId = await obtenerUserId();
+  if (!userId) return null;
+
+  const { data, error } = await supabase
+    .from("notas")
+    .select("id, titulo, contenido, actualizada")
+    .eq("id", id)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return data as Nota;
 }
 
 export async function guardarNota(nota: Nota) {
-  const notas = await obtenerNotas();
-  const indice = notas.findIndex(n => n.id === nota.id);
-  if (indice >= 0) notas[indice] = nota;
-  else notas.unshift(nota);
-  await guardarNotas(notas);
+  const userId = await obtenerUserId();
+  if (!userId) return;
+
+  await supabase.from("notas").upsert({
+    id: nota.id,
+    user_id: userId,
+    titulo: nota.titulo,
+    contenido: nota.contenido,
+    actualizada: nota.actualizada,
+  });
 }
 
 export async function eliminarNota(id: string) {
-  const notas = await obtenerNotas();
-  await guardarNotas(notas.filter(n => n.id !== id));
+  const userId = await obtenerUserId();
+  if (!userId) return;
+
+  await supabase.from("notas").delete().eq("id", id).eq("user_id", userId);
 }

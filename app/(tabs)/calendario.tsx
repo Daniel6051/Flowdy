@@ -1,10 +1,14 @@
-import { View, Text, TouchableOpacity } from "react-native";
+import { View, Text, TouchableOpacity, Modal, ActivityIndicator, Alert, ScrollView } from "react-native";
 import Animated, { FadeInRight, FadeInLeft, ZoomIn, FadeIn } from "react-native-reanimated";
-import { useState, useCallback, Fragment } from "react";
+import { useState, useEffect, useCallback, Fragment } from "react";
 import { useRouter, useFocusEffect } from "expo-router";
-import { ChevronLeft, ChevronRight, Bell, ListChecks, Mic } from "lucide-react-native";
+import { ChevronLeft, ChevronRight, Bell, ListChecks, Mic, Check } from "lucide-react-native";
 import { Evento, obtenerEventos } from "../../lib/planDelDia";
 import { Tarea, obtenerTareasDelMes, COLORES_PRIORIDAD } from "../../lib/tareas";
+import {
+  Grabacion, getGrabaciones, obtenerGrabacionesVinculadasDelMes,
+  vincularAudioADia, diaISODesde, formatearDuracion,
+} from "../../lib/grabaciones";
 
 const DIAS = ["L", "M", "M", "J", "V", "S", "D"];
 const MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
@@ -18,6 +22,14 @@ export default function CalendarioScreen() {
   const [direccion, setDireccion] = useState<"izq" | "der">("der");
   const [eventosDelDia, setEventosDelDia] = useState<Evento[]>([]);
   const [tareasPorDia, setTareasPorDia] = useState<Record<number, Tarea[]>>({});
+
+  // Audios vinculados a días de este mes (para el puntito y la vista previa)
+  const [audiosPorDia, setAudiosPorDia] = useState<Record<number, Grabacion[]>>({});
+
+  // Modal "Agregar audios": lista completa de grabaciones para elegir cuáles vincular
+  const [modalAudiosVisible, setModalAudiosVisible] = useState(false);
+  const [todasLasGrabaciones, setTodasLasGrabaciones] = useState<Grabacion[]>([]);
+  const [cargandoModal, setCargandoModal] = useState(false);
 
   const primerDia = new Date(anio, mes, 1).getDay();
   const diasEnMes = new Date(anio, mes + 1, 0).getDate();
@@ -52,6 +64,8 @@ export default function CalendarioScreen() {
     weekday: "long", day: "numeric", month: "long",
   });
 
+  const diaISOSeleccionado = diaISODesde(anio, mes, diaSeleccionado);
+
   // Vista previa del Plan del Día para el día seleccionado
   useFocusEffect(
     useCallback(() => {
@@ -73,8 +87,70 @@ export default function CalendarioScreen() {
     }, [anio, mes])
   );
 
+  // Carga los audios VINCULADOS a días del mes visible (puntito celeste + vista previa)
+  useFocusEffect(
+    useCallback(() => {
+      let activo = true;
+      const cargarAudiosDelMes = async () => {
+        const mapa = await obtenerGrabacionesVinculadasDelMes(anio, mes);
+        if (!activo) return;
+        setAudiosPorDia(mapa);
+      };
+      cargarAudiosDelMes();
+      return () => { activo = false; };
+    }, [anio, mes])
+  );
+
+  // Cuando se abre el modal, traemos TODAS las grabaciones para elegir cuáles vincular a este día
+  useEffect(() => {
+    if (!modalAudiosVisible) return;
+    let activo = true;
+    setCargandoModal(true);
+    getGrabaciones().then((lista) => {
+      if (!activo) return;
+      setTodasLasGrabaciones(lista);
+      setCargandoModal(false);
+    });
+    return () => { activo = false; };
+  }, [modalAudiosVisible]);
+
+  // Vincula o desvincula un audio del día seleccionado (toggle), con actualización optimista
+  const alternarVinculo = async (audio: Grabacion) => {
+    const yaVinculada = audio.diaVinculado === diaISOSeleccionado;
+    const nuevoValor = yaVinculada ? null : diaISOSeleccionado;
+
+    setTodasLasGrabaciones((prev) =>
+      prev.map((g) => (g.id === audio.id ? { ...g, diaVinculado: nuevoValor } : g))
+    );
+
+    setAudiosPorDia((prev) => {
+      const copia: Record<number, Grabacion[]> = {};
+      Object.keys(prev).forEach((k) => {
+        const num = Number(k);
+        copia[num] = prev[num].filter((g) => g.id !== audio.id);
+      });
+      if (nuevoValor) {
+        copia[diaSeleccionado] = [...(copia[diaSeleccionado] ?? []), { ...audio, diaVinculado: nuevoValor }];
+      }
+      return copia;
+    });
+
+    try {
+      await vincularAudioADia(audio.id, nuevoValor);
+    } catch {
+      Alert.alert("Error", "No se pudo vincular el audio con este día.");
+    }
+  };
+
+  const audiosDelDiaSeleccionado = audiosPorDia[diaSeleccionado] ?? [];
+
   return (
-    <View style={{ flex: 1, backgroundColor: "#B6C3F2", padding: 20 }}>
+    <View style={{ flex: 1, backgroundColor: "#B6C3F2" }}>
+    <ScrollView
+      style={{ flex: 1 }}
+      contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
+      showsVerticalScrollIndicator={false}
+    >
       {/* Header */}
       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 40 }}>
         <Text style={{ fontSize: 24, fontWeight: "bold", color: "#1a1a1a" }}>Calendario</Text>
@@ -124,6 +200,7 @@ export default function CalendarioScreen() {
                   const esHoy = dia === hoy.getDate() && mes === hoy.getMonth() && anio === hoy.getFullYear();
                   const seleccionado = dia === diaSeleccionado;
                   const tieneTareas = !!dia && !!tareasPorDia[dia]?.length;
+                  const tieneAudios = !!dia && !!audiosPorDia[dia]?.length;
                   return (
                     <TouchableOpacity
                       key={i}
@@ -147,10 +224,16 @@ export default function CalendarioScreen() {
                           {dia || ""}
                         </Text>
                       </Animated.View>
-                      <View style={{
-                        width: 5, height: 5, borderRadius: 2.5, marginTop: 3,
-                        backgroundColor: tieneTareas ? "#7C3AED" : "transparent",
-                      }} />
+                      <View style={{ flexDirection: "row", gap: 3, marginTop: 3, height: 5 }}>
+                        <View style={{
+                          width: 5, height: 5, borderRadius: 2.5,
+                          backgroundColor: tieneTareas ? "#7C3AED" : "transparent",
+                        }} />
+                        <View style={{
+                          width: 5, height: 5, borderRadius: 2.5,
+                          backgroundColor: tieneAudios ? "#38BDF8" : "transparent",
+                        }} />
+                      </View>
                     </TouchableOpacity>
                   );
                 })}
@@ -233,7 +316,7 @@ export default function CalendarioScreen() {
         )}
 
         <TouchableOpacity
-          onPress={() => router.push("/grabadora")}
+          onPress={() => setModalAudiosVisible(true)}
           activeOpacity={0.8}
           style={{
             backgroundColor: "#7C3AED", borderRadius: 12, padding: 16,
@@ -243,7 +326,114 @@ export default function CalendarioScreen() {
           <Mic size={18} color="#FFFFFF" />
           <Text style={{ color: "#FFFFFF", fontWeight: "bold", fontSize: 16 }}>Agregar audios</Text>
         </TouchableOpacity>
+
+        {/* Vista previa de los audios ya vinculados a este día — tocar para reproducir */}
+        {audiosDelDiaSeleccionado.length > 0 && (
+          <View style={{ backgroundColor: "#FFFFFF", borderRadius: 12, padding: 12 }}>
+            {audiosDelDiaSeleccionado.map((a) => (
+              <TouchableOpacity
+                key={a.id}
+                onPress={() => router.push({ pathname: "/grabadora", params: { id: a.id } })}
+                activeOpacity={0.7}
+                style={{ flexDirection: "row", alignItems: "center", marginBottom: 6 }}
+              >
+                <Mic size={14} color="#7C3AED" style={{ marginRight: 8 }} />
+                <Text style={{ color: "#1a1a1a", fontSize: 13, flex: 1 }} numberOfLines={1}>
+                  {a.nombre}
+                </Text>
+                <Text style={{ color: "#9CA3AF", fontSize: 12 }}>
+                  {formatearDuracion(a.duracion)}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
       </View>
+    </ScrollView>
+
+      {/* Modal: elegir qué audios existentes vincular a este día */}
+      <Modal
+        visible={modalAudiosVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setModalAudiosVisible(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "flex-end" }}>
+          <View style={{
+            backgroundColor: "#FFFFFF", borderTopLeftRadius: 20, borderTopRightRadius: 20,
+            padding: 20, paddingBottom: 32, maxHeight: "75%",
+          }}>
+            <Text style={{ fontSize: 16, fontWeight: "bold", color: "#1a1a1a", marginBottom: 4 }}>
+              Agregar audios
+            </Text>
+            <Text style={{ fontSize: 13, color: "#9CA3AF", marginBottom: 14, textTransform: "capitalize" }}>
+              Elegí cuáles vincular al {fechaSeleccionadaTexto}
+            </Text>
+
+            {cargandoModal ? (
+              <ActivityIndicator color="#7C3AED" style={{ marginBottom: 18 }} />
+            ) : todasLasGrabaciones.length === 0 ? (
+              <Text style={{ color: "#9CA3AF", fontSize: 13, marginBottom: 18 }}>
+                Todavía no tenés grabaciones. Grabá una desde Grabadora primero.
+              </Text>
+            ) : (
+              <View style={{ marginBottom: 18, gap: 8 }}>
+                {todasLasGrabaciones.map((g) => {
+                  const vinculadaHoy = g.diaVinculado === diaISOSeleccionado;
+                  const vinculadaOtroDia = !!g.diaVinculado && !vinculadaHoy;
+                  return (
+                    <TouchableOpacity
+                      key={g.id}
+                      onPress={() => alternarVinculo(g)}
+                      activeOpacity={0.8}
+                      style={{
+                        flexDirection: "row", alignItems: "center",
+                        backgroundColor: vinculadaHoy ? "#EDE9FE" : "#F5F3FF",
+                        borderRadius: 10, padding: 10, gap: 10,
+                        borderWidth: vinculadaHoy ? 1.5 : 0, borderColor: "#7C3AED",
+                      }}
+                    >
+                      <View style={{
+                        width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: "#7C3AED",
+                        alignItems: "center", justifyContent: "center",
+                        backgroundColor: vinculadaHoy ? "#7C3AED" : "transparent",
+                      }}>
+                        {vinculadaHoy && <Check size={12} color="#FFFFFF" />}
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ color: "#1a1a1a", fontSize: 13 }} numberOfLines={1}>{g.nombre}</Text>
+                        {vinculadaOtroDia && (
+                          <Text style={{ color: "#9CA3AF", fontSize: 11 }}>
+                            Ya vinculada a {g.diaVinculado}
+                          </Text>
+                        )}
+                      </View>
+                      <Text style={{ color: "#9CA3AF", fontSize: 12 }}>{formatearDuracion(g.duracion)}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
+
+            <TouchableOpacity
+              onPress={() => { setModalAudiosVisible(false); router.push("/grabadora-activa"); }}
+              activeOpacity={0.85}
+              style={{
+                backgroundColor: "#7C3AED", borderRadius: 12, padding: 14,
+                alignItems: "center", marginBottom: 8,
+              }}
+            >
+              <Text style={{ color: "#FFFFFF", fontWeight: "bold", fontSize: 15 }}>
+                Grabar nuevo audio
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity onPress={() => setModalAudiosVisible(false)} style={{ alignItems: "center", padding: 8 }}>
+              <Text style={{ color: "#9CA3AF", fontSize: 13 }}>Listo</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }

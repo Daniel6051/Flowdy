@@ -1,18 +1,20 @@
 import {
   View, Text, FlatList, TouchableOpacity,
-  StyleSheet, Alert,
+  StyleSheet, Alert, ActivityIndicator, TextInput, Animated,
 } from "react-native";
-import { useRouter, useFocusEffect } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { useRouter, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   useAudioPlayer,
   useAudioPlayerStatus,
   setAudioModeAsync,
   setIsAudioActiveAsync,
 } from "expo-audio";
-import { ArrowLeft, Mic, Play, Pause, Trash2, FileText } from "lucide-react-native";
+import * as FileSystem from "expo-file-system/legacy";
+import { ArrowLeft, Mic, Play, Pause, Trash2, FileText, Pencil, Check } from "lucide-react-native";
 import {
-  Grabacion, getGrabaciones, eliminarGrabacion, formatearDuracion,
+  Grabacion, getGrabaciones, eliminarGrabacion, formatearDuracion, transcribirAudio,
+  renombrarGrabacion,
 } from "../lib/grabaciones";
 
 function uriLocal(uri: string) {
@@ -32,11 +34,22 @@ async function modoReproduccion() {
 
 export default function GrabadoraScreen() {
   const router = useRouter();
+  const { id: idAReproducir } = useLocalSearchParams<{ id?: string }>();
+  const idYaReproducidoRef = useRef<string | null>(null);
   const player = useAudioPlayer(null, { updateInterval: 200 });
   const status = useAudioPlayerStatus(player);
   const [grabaciones, setGrabaciones] = useState<Grabacion[]>([]);
   const [idActiva, setIdActiva] = useState<string | null>(null);
   const [esperandoPlay, setEsperandoPlay] = useState(false);
+  const [transcribiendo, setTranscribiendo] = useState<string | null>(null);
+  const [editandoId, setEditandoId] = useState<string | null>(null);
+  const [textoEdicion, setTextoEdicion] = useState("");
+
+  // Animación de escala para el botón flotante de grabar
+  const escalaFab = useRef(new Animated.Value(1)).current;
+  const presionar = (valor: Animated.Value, hacia: number) => {
+    Animated.spring(valor, { toValue: hacia, useNativeDriver: true, speed: 40, bounciness: 8 }).start();
+  };
 
   const detenerAlFinal = () => {
     setEsperandoPlay(false);
@@ -105,6 +118,18 @@ export default function GrabadoraScreen() {
     }
   };
 
+  // Si venimos del modal "Agregar audios" del calendario con un id puntual,
+  // reproducimos esa grabación apenas está disponible en la lista (una sola vez).
+  useEffect(() => {
+    if (!idAReproducir) return;
+    if (idYaReproducidoRef.current === idAReproducir) return;
+    const item = grabaciones.find((g) => g.id === idAReproducir);
+    if (!item) return;
+
+    idYaReproducidoRef.current = idAReproducir;
+    togglePlay(item);
+  }, [idAReproducir, grabaciones]);
+
   const handleEliminar = (id: string) => {
     Alert.alert("Eliminar grabación", "¿Estás seguro?", [
       { text: "Cancelar", style: "cancel" },
@@ -122,9 +147,77 @@ export default function GrabadoraScreen() {
     ]);
   };
 
+  const iniciarEdicion = (item: Grabacion) => {
+    if (transcribiendo === item.id) return;
+    setEditandoId(item.id);
+    setTextoEdicion(item.nombre);
+  };
+
+  const confirmarEdicion = async () => {
+    if (!editandoId) return;
+    const idAEditar = editandoId;
+    const nombreFinal = textoEdicion.trim();
+
+    setEditandoId(null);
+    if (!nombreFinal) return;
+
+    setGrabaciones((prev) =>
+      prev.map((g) => (g.id === idAEditar ? { ...g, nombre: nombreFinal } : g))
+    );
+    try {
+      await renombrarGrabacion(idAEditar, nombreFinal);
+    } catch {
+      Alert.alert("Error", "No se pudo renombrar la grabación.");
+      cargar();
+    }
+  };
+
+  const handleTranscribir = async (item: Grabacion) => {
+    if (transcribiendo === item.id) return;
+
+    // Si ya tiene transcripción, mostrarla directamente
+    if (item.transcripcion) {
+      Alert.alert("Transcripción", item.transcripcion, [
+        { text: "Cerrar", style: "cancel" },
+        {
+          text: "Re-transcribir",
+          onPress: () => iniciarTranscripcion(item),
+        },
+      ]);
+      return;
+    }
+
+    iniciarTranscripcion(item);
+  };
+
+  const iniciarTranscripcion = async (item: Grabacion) => {
+    setTranscribiendo(item.id);
+    try {
+      // Descargamos el audio de Supabase Storage a caché local
+      const destino = `${FileSystem.cacheDirectory}${item.id}.m4a`;
+      await FileSystem.downloadAsync(item.uri, destino);
+
+      const texto = await transcribirAudio(item.id, destino);
+
+      // Actualizar la lista localmente sin recargar todo
+      setGrabaciones((prev) =>
+        prev.map((g) => (g.id === item.id ? { ...g, transcripcion: texto } : g))
+      );
+
+      Alert.alert("📝 Transcripción lista", texto);
+    } catch (e: any) {
+      Alert.alert("Error", e.message ?? "No se pudo transcribir el audio.");
+    } finally {
+      setTranscribiendo(null);
+    }
+  };
+
   const renderItem = ({ item }: { item: Grabacion }) => {
     const esActiva = idActiva === item.id;
     const reproduciendo = esActiva && status.playing;
+    const estaTranscribiendo = transcribiendo === item.id;
+    const estaEditando = editandoId === item.id;
+
     return (
       <View style={styles.item}>
         <TouchableOpacity
@@ -138,27 +231,61 @@ export default function GrabadoraScreen() {
         </TouchableOpacity>
 
         <View style={styles.itemInfo}>
-          <Text style={styles.itemNombre} numberOfLines={1}>{item.nombre}</Text>
+          {estaEditando ? (
+            <TextInput
+              style={styles.itemNombreInput}
+              value={textoEdicion}
+              onChangeText={setTextoEdicion}
+              autoFocus
+              onSubmitEditing={confirmarEdicion}
+              onBlur={confirmarEdicion}
+              returnKeyType="done"
+              selectTextOnFocus
+            />
+          ) : (
+            <Text style={styles.itemNombre} numberOfLines={1}>{item.nombre}</Text>
+          )}
           <Text style={styles.itemMeta}>
             {formatearDuracion(item.duracion)} · {new Date(item.fecha).toLocaleDateString("es-AR")}
           </Text>
           {item.transcripcion && (
-            <Text style={styles.itemTranscripcion} numberOfLines={1}>
+            <Text style={styles.itemTranscripcion} numberOfLines={2}>
               📝 {item.transcripcion}
             </Text>
+          )}
+          {estaTranscribiendo && (
+            <Text style={styles.itemTranscribiendo}>Transcribiendo...</Text>
           )}
         </View>
 
         <View style={styles.itemAcciones}>
+          {estaEditando ? (
+            <TouchableOpacity style={styles.accionBtn} onPress={confirmarEdicion}>
+              <Check size={18} color="#22C55E" />
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={styles.accionBtn}
+              onPress={() => iniciarEdicion(item)}
+              disabled={estaTranscribiendo}
+            >
+              <Pencil size={16} color="#A78BFA" />
+            </TouchableOpacity>
+          )}
           <TouchableOpacity
             style={styles.accionBtn}
-            onPress={() => Alert.alert("Whisperflow", "Disponible cuando conectemos la Whisper API.")}
+            onPress={() => handleTranscribir(item)}
+            disabled={estaTranscribiendo}
           >
-            <FileText size={18} color="#7C3AED" />
+            {estaTranscribiendo
+              ? <ActivityIndicator size="small" color="#7C3AED" />
+              : <FileText size={18} color={item.transcripcion ? "#7C3AED" : "#A78BFA"} />
+            }
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.accionBtn}
             onPress={() => handleEliminar(item.id)}
+            disabled={estaTranscribiendo}
           >
             <Trash2 size={18} color="#EF4444" />
           </TouchableOpacity>
@@ -170,8 +297,8 @@ export default function GrabadoraScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <ArrowLeft size={22} color="#7C3AED" />
+        <TouchableOpacity onPress={() => router.replace("/calendario")} style={styles.backBtn}>
+          <ArrowLeft size={30} color="#7C3AED" />
         </TouchableOpacity>
         <Text style={styles.title}>Grabaciones</Text>
         <View style={styles.headerSpacer} />
@@ -194,11 +321,14 @@ export default function GrabadoraScreen() {
       )}
 
       <TouchableOpacity
-        style={styles.fab}
         onPress={() => router.push("/grabadora-activa")}
+        onPressIn={() => presionar(escalaFab, 0.9)}
+        onPressOut={() => presionar(escalaFab, 1)}
         activeOpacity={0.85}
       >
-        <Mic size={28} color="#FFF" />
+        <Animated.View style={[styles.fab, { transform: [{ scale: escalaFab }] }]}>
+          <Mic size={28} color="#FFF" />
+        </Animated.View>
       </TouchableOpacity>
     </View>
   );
@@ -224,8 +354,14 @@ const styles = StyleSheet.create({
   playBtnActivo: { backgroundColor: "#7C3AED" },
   itemInfo: { flex: 1, gap: 2 },
   itemNombre: { fontSize: 14, fontWeight: "600", color: "#1a1a2e" },
+  itemNombreInput: {
+    fontSize: 14, fontWeight: "600", color: "#1a1a2e",
+    borderBottomWidth: 1, borderBottomColor: "#7C3AED",
+    paddingVertical: 0, paddingHorizontal: 0, margin: 0,
+  },
   itemMeta: { fontSize: 12, color: "#999" },
   itemTranscripcion: { fontSize: 12, color: "#7C3AED", marginTop: 2 },
+  itemTranscribiendo: { fontSize: 12, color: "#A78BFA", marginTop: 2, fontStyle: "italic" },
   itemAcciones: { flexDirection: "row", gap: 4 },
   accionBtn: { padding: 6 },
   vacio: { flex: 1, justifyContent: "center", alignItems: "center", gap: 8 },

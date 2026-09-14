@@ -2,7 +2,8 @@ import { View, Text, TouchableOpacity, ScrollView } from "react-native";
 import { useState, useCallback } from "react";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Plus, Trash2, StickyNote } from "lucide-react-native";
-import { Nota, obtenerNotas, eliminarNota } from "../lib/notas";
+// ahora:
+import { Nota, obtenerNotas, eliminarNota, generarIdNota } from "../lib/notas";
 
 export default function NotasScreen() {
   const router = useRouter();
@@ -17,9 +18,9 @@ export default function NotasScreen() {
   );
 
   const nuevaNota = () => {
-    const id = Date.now().toString();
+    const id = generarIdNota();
     router.push(`/nota/${id}`);
-  };
+  };  
 
   const borrarNota = async (id: string) => {
     await eliminarNota(id);
@@ -36,7 +37,7 @@ export default function NotasScreen() {
     <View style={{ flex: 1, backgroundColor: "#B6C3F2", padding: 20 }}>
       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 40 }}>
         <TouchableOpacity onPress={() => router.back()}>
-          <Text style={{ fontSize: 20, color: "#7C3AED" }}>‹</Text>
+          <Text style={{ fontSize: 40, color: "#7C3AED" }}>‹</Text>
         </TouchableOpacity>
         <Text style={{ fontSize: 20, fontWeight: "bold", color: "#1a1a1a" }}>Notas</Text>
         <TouchableOpacity onPress={nuevaNota}>

@@ -12,7 +12,7 @@ import {
   requestRecordingPermissionsAsync,
 } from "expo-audio";
 import { ArrowLeft, Mic, Pause, Square, Play } from "lucide-react-native";
-import { guardarGrabacion, formatearDuracion } from "../lib/grabaciones";
+import { guardarGrabacion, generarIdGrabacion, formatearDuracion } from "../lib/grabaciones";
 
 const OPCIONES_GRABACION = {
   ...RecordingPresets.HIGH_QUALITY,
@@ -100,16 +100,19 @@ export default function GrabadoraActivaScreen() {
   const guardar = async () => {
     if (!uri) return;
     const fecha = new Date();
-    await guardarGrabacion({
-      id: Date.now().toString(),
-      nombre: `Grabación ${fecha.toLocaleDateString("es-AR")} ${fecha.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })}`,
-      uri,
-      duracion: segundos,
-      fecha: fecha.toISOString(),
-    });
-    router.back();
+    try {
+      await guardarGrabacion({
+        id: generarIdGrabacion(),
+        nombre: `Grabación ${fecha.toLocaleDateString("es-AR")} ${fecha.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })}`,
+        uri,
+        duracion: segundos,
+        fecha: fecha.toISOString(),
+      });
+      router.back();
+    } catch {
+      Alert.alert("Error", "No se pudo guardar la grabación. Probá de nuevo.");
+    }
   };
-
   const cancelar = () => {
     Alert.alert("Cancelar grabación", "¿Descartás esta grabación?", [
       { text: "Seguir grabando", style: "cancel" },

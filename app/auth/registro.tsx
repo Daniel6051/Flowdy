@@ -14,7 +14,7 @@ import { ArrowLeft } from "lucide-react-native";
 import { useState } from "react";
 import InputSeguro from "../../components/InputSeguro";
 import FortalezaPassword from "../../components/FortalezaPassword";
-import CaptchaVisual from "../../components/CaptchaVisual";
+import CaptchaHcaptcha from "../../components/CaptchaHcaptcha";
 import { supabase } from "../../lib/supabase";
 import {
   validarEmail,
@@ -32,6 +32,7 @@ export default function RegistroScreen() {
   const [password, setPassword]         = useState("");
   const [repetir, setRepetir]           = useState("");
   const [captchaOk, setCaptchaOk]       = useState(false);
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [cargando, setCargando]         = useState(false);
   const [aceptaTerminos, setAceptaTerminos] = useState(false);
 
@@ -52,11 +53,28 @@ export default function RegistroScreen() {
     if (!formularioValido || cargando) return;
     setCargando(true);
     try {
+      // Validación server-side del captcha antes de crear la cuenta
+      const { data: captchaCheck, error: captchaError } = await supabase.functions.invoke(
+        "verificar-captcha",
+        { body: { token: captchaToken } }
+      );
+
+      if (captchaError || !captchaCheck?.success) {
+        Alert.alert(
+          "Verificación fallida",
+          "No pudimos confirmar el captcha, intentá de nuevo.",
+          [{ text: "Entendido" }]
+        );
+        setCargando(false);
+        return;
+      }
+
       const { error } = await supabase.auth.signUp({
         email: sanitizar(email).toLowerCase(),
         password,
         options: {
           data: { nombre: sanitizar(nombre) },
+          emailRedirectTo: "flowdy://auth/confirmado",
         },
       });
       if (error) throw error;
@@ -92,7 +110,7 @@ export default function RegistroScreen() {
         keyboardShouldPersistTaps="handled"
       >
         <TouchableOpacity style={styles.back} onPress={() => router.back()}>
-          <ArrowLeft size={22} color="#7C3AED" />
+          <ArrowLeft size={30} color="#7C3AED" />
         </TouchableOpacity>
 
         <View style={styles.card}>
@@ -160,10 +178,11 @@ export default function RegistroScreen() {
             </Text>
           </TouchableOpacity>
 
-          {/* Captcha visual + TODO hCaptcha */}
-          <CaptchaVisual
+          {/* Captcha real (hCaptcha) */}
+          <CaptchaHcaptcha
             verificado={captchaOk}
             onVerificado={setCaptchaOk}
+            onToken={setCaptchaToken}
           />
 
           <TouchableOpacity
